@@ -62,6 +62,7 @@ def train(args):
     global_step, first_epoch, progress_bar = more_init(accelerator, args, train_dataloader, 
                                                         train_dataset, logger, num_update_steps_per_epoch, global_step, wandb_name="cfg_as_rl")
 
+    grad_norm = 0
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
         for step, batch in enumerate(train_dataloader):
@@ -97,6 +98,9 @@ def train(args):
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
+                if step % 25 == 0:
+                    print(unet.special_token)
+
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
@@ -108,7 +112,7 @@ def train(args):
                         save_model(unet,accelerator,save_path, args, logger)
                         
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0], "grad_norm": grad_norm}
             progress_bar.set_postfix(**logs)
             if args.use_wandb:
                 accelerator.log(logs, step=global_step)

@@ -3,3 +3,5 @@ images
 *cpython*
 *.log
 wandb
+model-output
+checkpoint*

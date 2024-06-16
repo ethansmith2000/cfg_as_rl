@@ -314,14 +314,14 @@ default_arguments = dict(
     output_dir="model-output",
     seed=123,
     resolution=640,
-    train_batch_size=1,
+    train_batch_size=4,
     max_train_steps=1250,
     validation_steps=250,
     checkpointing_steps=500,
     resume_from_checkpoint=None,
     gradient_accumulation_steps=1,
     gradient_checkpointing=False,
-    learning_rate=6.0e-5,
+    learning_rate=1.0e-3,
     lr_scheduler="constant",
     lr_warmup_steps=50,
     lr_num_cycles=1,
@@ -340,7 +340,7 @@ default_arguments = dict(
     local_rank=-1,
     num_processes=1,
     use_wandb=True,
-    num_tokens=1,
+    num_tokens=8,
 )
 
 
