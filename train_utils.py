@@ -38,7 +38,6 @@ from tqdm import tqdm
 
 import numpy as np
 
-from pipeline import StableDiffusionRLCFGPipeline
 import pandas as pd
 
 
@@ -55,9 +54,9 @@ def collate_fn(examples):
 
 
 
-def save_model(unet, accelerator, save_path, args, logger, keyword="special_token"):
+def save_model(unet, accelerator, save_path, args, logger, keyword="reward_emb"):
     unwrapped = unwrap_model(accelerator, unet)
-    state_dict = {"token": unwrapped.special_token}
+    state_dict = {"token": unwrapped.reward_emb}
     torch.save(state_dict, save_path)
     logger.info(f"Saved state to {save_path}")
 
@@ -91,17 +90,25 @@ class PandasDataset(Dataset):
     
 
     def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-        img = Image.open(img_path).convert("RGB")
-        prompt = self.prompts[idx]
-        img = self.image_transforms(img)
+        for i in range(10):
+            try:
+                img_path = self.image_paths[idx]
+                img = Image.open(img_path).convert("RGB")
+                # w, h = img.size
+                # img = img.crop((0, 0, w//2, h//2))
+                prompt = self.prompts[idx]
+                img = self.image_transforms(img)
 
-        example = {
-            "pixel_values": img,
-            "text": prompt,
-        }
+                example = {
+                    "pixel_values": img,
+                    "text": prompt,
+                }
 
-        return example
+                return example
+            except Exception as e:
+                idx = random.randint(0, len(self.image_paths)-1)
+                print(e)
+                continue
 
 
 
@@ -121,6 +128,10 @@ def log_validation(
     logger,
     is_final_validation=False,
 ):
+    if len(unet.reward_emb.shape) == 3:
+        from pipeline_seq import StableDiffusionRLCFGPipeline   
+    else:
+        from pipeline import StableDiffusionRLCFGPipeline
 
     pipeline = StableDiffusionRLCFGPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -248,12 +259,6 @@ def load_models(args, accelerator, weight_dtype):
         unet.enable_gradient_checkpointing()
 
 
-    example_inputs = tokenizer("A photo of a cat", return_tensors="pt", padding="max_length", max_length=77)
-    example_inputs = text_encoder(example_inputs.input_ids.to(text_encoder.device)).last_hidden_state[:, 4:5]
-    special_token = torch.randn(example_inputs.shape[0], args.num_tokens, example_inputs.shape[-1], device=example_inputs.device, dtype=example_inputs.dtype)
-    special_token = (special_token / special_token.norm(dim=-1, keepdim=True)) * example_inputs.norm(dim=-1, keepdim=True)
-    unet.register_parameter("special_token", torch.nn.Parameter(special_token))
-
     return tokenizer, noise_scheduler, text_encoder, vae, unet
 
 
@@ -312,24 +317,24 @@ default_arguments = dict(
     dataset_path="./dataset.parquet",
     num_validation_images=4,
     output_dir="model-output",
-    seed=123,
-    resolution=640,
-    train_batch_size=4,
-    max_train_steps=1250,
+    seed=124,
+    resolution=512,
+    train_batch_size=8,
+    max_train_steps=5000,
     validation_steps=250,
     checkpointing_steps=500,
     resume_from_checkpoint=None,
     gradient_accumulation_steps=1,
     gradient_checkpointing=False,
-    learning_rate=1.0e-3,
-    lr_scheduler="constant",
+    learning_rate=5.0e-2,
+    lr_scheduler="linear",
     lr_warmup_steps=50,
     lr_num_cycles=1,
     lr_power=1.0,
     dataloader_num_workers=4,
     use_8bit_adam=False,
-    adam_beta1=0.9,
-    adam_beta2=0.99,
+    adam_beta1=0.85,
+    adam_beta2=0.98,
     adam_weight_decay=1e-2,
     adam_epsilon=1e-08,
     max_grad_norm=1.0,
@@ -340,7 +345,7 @@ default_arguments = dict(
     local_rank=-1,
     num_processes=1,
     use_wandb=True,
-    num_tokens=8,
+    num_tokens=16,
 )
 
 
@@ -349,7 +354,7 @@ def resume_model(unet, path, accelerator):
     global_step = int(path.split("-")[-1])
     state_dict = torch.load(path, map_location="cpu")
 
-    unet.special_token = torch.nn.Parameter(state_dict["token"].to(accelerator.device))
+    unet.reward_emb = torch.nn.Parameter(state_dict["token"].to(accelerator.device))
 
     return global_step
 

@@ -145,7 +145,7 @@ class StableDiffusionRLCFGPipeline(StableDiffusionPipeline):
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
-        reward_guidance_scale=4.0,
+        reward_guidance_scale=2.5,
         **kwargs,
     ):
         r"""
@@ -365,19 +365,10 @@ class StableDiffusionRLCFGPipeline(StableDiffusionPipeline):
         # prompt_embeds_reward = torch.cat([prompt_embeds, self.unet.reward_emb.expand(prompt_embeds.shape[0], -1, -1)], dim=1)
         # prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds_base, prompt_embeds_reward], dim=0)
 
-        # reward_emb =  self.unet.reward_emb.expand(prompt_embeds.shape[0], -1, -1)
-        # token_len = reward_emb.shape[1]
-        # reward_emb = torch.cat([reward_emb, torch.zeros(reward_emb.shape[0], 77-token_len, reward_emb.shape[2]).to(reward_emb.device)], dim=1)
-        prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds, prompt_embeds], dim=0)
-
-        def time_embed_act_patch(unet, emb):
-            reward_emb = unet.reward_emb.repeat(emb.shape[0], 1)
-            chunk = emb.shape[0] // 3
-            reward_emb[:-chunk] = 0
-            emb = emb + reward_emb
-            return emb
-
-        self.unet.time_embed_act = MethodType(time_embed_act_patch, self.unet)
+        reward_emb =  self.unet.reward_emb.expand(prompt_embeds.shape[0], -1, -1)
+        token_len = reward_emb.shape[1]
+        reward_emb = torch.cat([reward_emb, torch.zeros(reward_emb.shape[0], 77-token_len, reward_emb.shape[2]).to(reward_emb.device)], dim=1)
+        prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds, reward_emb], dim=0)
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
