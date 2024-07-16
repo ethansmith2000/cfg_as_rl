@@ -145,7 +145,8 @@ class StableDiffusionRLCFGPipeline(StableDiffusionPipeline):
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
-        reward_guidance_scale=4.0,
+        reward_guidance_scale=2.5,
+        cond_reward=False,
         **kwargs,
     ):
         r"""
@@ -359,25 +360,19 @@ class StableDiffusionRLCFGPipeline(StableDiffusionPipeline):
         
         # add our special token
         neg_prompt_embeds, prompt_embeds = prompt_embeds.chunk(2)
-        # buf_size = self.unet.reward_emb.size(1)
-        # neg_prompt_embeds = torch.cat([neg_prompt_embeds, neg_prompt_embeds[:, -buf_size:]], dim=1)
-        # prompt_embeds_base = torch.cat([prompt_embeds, prompt_embeds[:, -buf_size:]], dim=1)
-        # prompt_embeds_reward = torch.cat([prompt_embeds, self.unet.reward_emb.expand(prompt_embeds.shape[0], -1, -1)], dim=1)
-        # prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds_base, prompt_embeds_reward], dim=0)
 
-        # reward_emb =  self.unet.reward_emb.expand(prompt_embeds.shape[0], -1, -1)
-        # token_len = reward_emb.shape[1]
-        # reward_emb = torch.cat([reward_emb, torch.zeros(reward_emb.shape[0], 77-token_len, reward_emb.shape[2]).to(reward_emb.device)], dim=1)
-        prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds, prompt_embeds], dim=0)
-
-        def time_embed_act_patch(unet, emb):
-            reward_emb = unet.reward_emb.repeat(emb.shape[0], 1)
-            chunk = emb.shape[0] // 3
-            reward_emb[:-chunk] = 0
-            emb = emb + reward_emb
-            return emb
-
-        self.unet.time_embed_act = MethodType(time_embed_act_patch, self.unet)
+        if cond_reward:
+            # repeat padding tokens
+            buf_size = self.unet.reward_emb.size(1)
+            neg_prompt_embeds = torch.cat([neg_prompt_embeds, neg_prompt_embeds[:, -buf_size:]], dim=1)
+            prompt_embeds_base = torch.cat([prompt_embeds, prompt_embeds[:, -buf_size:]], dim=1)
+            prompt_embeds_reward = torch.cat([prompt_embeds, self.unet.reward_emb.expand(prompt_embeds.shape[0], -1, -1)], dim=1)
+            prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds_base, prompt_embeds_reward], dim=0)
+        else:
+            reward_emb =  self.unet.reward_emb.expand(prompt_embeds.shape[0], -1, -1)
+            token_len = reward_emb.shape[1]
+            reward_emb = torch.cat([reward_emb, torch.zeros(reward_emb.shape[0], 77-token_len, reward_emb.shape[2]).to(reward_emb.device)], dim=1)
+            prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds, reward_emb], dim=0)
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -405,7 +400,7 @@ class StableDiffusionRLCFGPipeline(StableDiffusionPipeline):
                 # perform guidance
                 if self.do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text, noise_pred_text_reward = noise_pred.chunk(3)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond) + reward_guidance_scale * (noise_pred_text_reward - noise_pred_text)
+                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond) + reward_guidance_scale * (noise_pred_text_reward - noise_pred_uncond)
 
                 if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
                     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf

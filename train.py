@@ -48,11 +48,11 @@ def train(args):
 
     tokenizer, noise_scheduler, text_encoder, vae, unet = load_models(args, accelerator, weight_dtype)
 
-    # example_inputs = tokenizer("A photo of a cat", return_tensors="pt", padding="max_length", max_length=77)
-    # example_inputs = text_encoder(example_inputs.input_ids.to(text_encoder.device)).last_hidden_state[:, 4:5]
-    # reward_emb = torch.randn(1, args.num_tokens, example_inputs.shape[-1], device=example_inputs.device, dtype=example_inputs.dtype)
+    example_inputs = tokenizer("A photo of a cat", return_tensors="pt", padding="max_length", max_length=77)
+    example_inputs = text_encoder(example_inputs.input_ids.to(text_encoder.device)).last_hidden_state[:, 4:5]
+    reward_emb = torch.randn(1, args.num_tokens, example_inputs.shape[-1], device=example_inputs.device, dtype=example_inputs.dtype)
     # reward_emb = (reward_emb / reward_emb.norm(dim=-1, keepdim=True)) * example_inputs.norm(dim=-1, keepdim=True)
-    unet.register_parameter("reward_emb", torch.nn.Parameter(torch.randn(1,1280)))
+    unet.register_parameter("reward_emb", torch.nn.Parameter(reward_emb))
 
     # Optimizer creation
     optimizer, lr_scheduler = get_optimizer(args, [unet.reward_emb], accelerator)
@@ -89,14 +89,11 @@ def train(args):
                     encoder_hidden_states = text_encoder(input_ids.to(text_encoder.device),return_dict=False,)[0]
 
                 # encoder_hidden_states = torch.cat([encoder_hidden_states, unet.reward_emb.expand(encoder_hidden_states.shape[0], -1, -1)], dim=1)
-                # special_token_len, dim = unet.reward_emb.shape[1:]
-                # encoder_hidden_states = torch.cat([unet.reward_emb.expand(noise.shape[0], -1, -1), torch.zeros(noise.shape[0], 77-special_token_len, dim).to(noise.device)], dim=1)
-
-                def time_embed_act_patch(self, emb):
-                    emb = emb + self.reward_emb
-                    return emb
-
-                unet.time_embed_act = MethodType(time_embed_act_patch, unet)
+                special_token_len, dim = unet.reward_emb.shape[1:]
+                if args.cond_reward:
+                    encoder_hidden_states = torch.cat([encoder_hidden_states, unet.reward_emb.expand(encoder_hidden_states.shape[0], -1, -1)], dim=1)
+                else:
+                    encoder_hidden_states = torch.cat([unet.reward_emb.expand(noise.shape[0], -1, -1), torch.zeros(noise.shape[0], 77-special_token_len, dim).to(noise.device)], dim=1)
 
                 # Predict the noise residual
                 model_pred = unet(

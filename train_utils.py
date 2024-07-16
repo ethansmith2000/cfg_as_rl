@@ -39,6 +39,7 @@ from tqdm import tqdm
 import numpy as np
 
 import pandas as pd
+from pipeline import StableDiffusionRLCFGPipeline
 
 
 def collate_fn(examples):
@@ -94,8 +95,8 @@ class PandasDataset(Dataset):
             try:
                 img_path = self.image_paths[idx]
                 img = Image.open(img_path).convert("RGB")
-                # w, h = img.size
-                # img = img.crop((0, 0, w//2, h//2))
+                w, h = img.size
+                img = img.crop((0, 0, w//2, h//2))
                 prompt = self.prompts[idx]
                 img = self.image_transforms(img)
 
@@ -128,10 +129,6 @@ def log_validation(
     logger,
     is_final_validation=False,
 ):
-    if len(unet.reward_emb.shape) == 3:
-        from pipeline_seq import StableDiffusionRLCFGPipeline   
-    else:
-        from pipeline import StableDiffusionRLCFGPipeline
 
     pipeline = StableDiffusionRLCFGPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -165,7 +162,7 @@ def log_validation(
 
     images = []
     with torch.cuda.amp.autocast():
-        images.extend(pipeline(prompt=args.validation_prompt, height=args.resolution, width=args.resolution, generator=generator).images)
+        images.extend(pipeline(prompt=args.validation_prompt, height=args.resolution, width=args.resolution, generator=generator, cond_reward=args.cond_reward).images)
 
     for tracker in accelerator.trackers:
         if args.use_wandb:
@@ -346,6 +343,7 @@ default_arguments = dict(
     num_processes=1,
     use_wandb=True,
     num_tokens=16,
+    cond_reward=True
 )
 
 
