@@ -5,3 +5,7 @@ images
 wandb
 model-output
 checkpoint*
+checkpoint-*
+__pycache__
+aesthetic_classifier
+*.pt*

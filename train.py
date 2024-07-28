@@ -36,8 +36,69 @@ from train_utils import (
     more_init,
     resume_model,
 )
+import reward_predictor
+from reward_predictor import load_aesthetic_classifier
 from types import SimpleNamespace
 from types import MethodType
+
+
+class FourierEmbedder:
+    def __init__(self, num_freqs=128, temperature=100):
+        self.num_freqs = num_freqs
+        self.temperature = temperature
+        self.freq_bands = temperature ** (torch.arange(num_freqs) / num_freqs)
+
+    @torch.no_grad()
+    def __call__(self, x, cat_dim=-1):
+        """
+        :param x: arbitrary shape of tensor
+        :param cat_dim: cat dim
+        """
+        out = []
+        for freq in self.freq_bands:
+            out.append(torch.sin(freq * x))
+            out.append(torch.cos(freq * x))
+        return torch.cat(out, cat_dim)
+
+
+class RewardProjector(torch.nn.Module):
+
+    def __init__(self, num_tokens, dim, fixed=False):
+        super().__init__()
+        self.num_tokens = num_tokens
+        self.dim = dim
+
+        if not fixed:
+            self.fourier_embedder = FourierEmbedder()
+
+            self.proj = torch.nn.Linear(256, num_tokens*256)
+
+            self.mlp = torch.nn.Sequential(
+                torch.nn.Linear(256, dim*2),
+                torch.nn.SiLU(),
+                torch.nn.Linear(dim*2, dim),
+            )
+
+            self.init_weights()
+            self.emb = None
+        else:
+            self.emb = torch.nn.Parameter(torch.randn(num_tokens, dim)*0.02)
+    
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    torch.nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        if self.emb is None:
+            x = self.fourier_embedder(x)
+            x = self.proj(x).reshape(x.shape[0], self.num_tokens, 256)
+            x = self.mlp(x)
+            return x
+        else:
+            return self.emb
 
 
 def train(args):
@@ -48,14 +109,13 @@ def train(args):
 
     tokenizer, noise_scheduler, text_encoder, vae, unet = load_models(args, accelerator, weight_dtype)
 
-    example_inputs = tokenizer("A photo of a cat", return_tensors="pt", padding="max_length", max_length=77)
-    example_inputs = text_encoder(example_inputs.input_ids.to(text_encoder.device)).last_hidden_state[:, 4:5]
-    reward_emb = torch.randn(1, args.num_tokens, example_inputs.shape[-1], device=example_inputs.device, dtype=example_inputs.dtype)
-    # reward_emb = (reward_emb / reward_emb.norm(dim=-1, keepdim=True)) * example_inputs.norm(dim=-1, keepdim=True)
-    unet.register_parameter("reward_emb", torch.nn.Parameter(reward_emb))
+    reward_projector = RewardProjector(args.num_tokens, 768)
+    unet.register_module("reward_projector", reward_projector)
+
+    reward_predictor = load_aesthetic_classifier("aesthetic_classifier")
 
     # Optimizer creation
-    optimizer, lr_scheduler = get_optimizer(args, [unet.reward_emb], accelerator)
+    optimizer, lr_scheduler = get_optimizer(args, list(unet.reward_projector.parameters()), accelerator)
     train_dataset, train_dataloader, num_update_steps_per_epoch = get_dataset(args, tokenizer)
 
     # Prepare everything with our `accelerator`.
@@ -88,12 +148,12 @@ def train(args):
                     input_ids = tokenizer(batch["text"], return_tensors="pt", padding="max_length", truncation=True, max_length=77).input_ids
                     encoder_hidden_states = text_encoder(input_ids.to(text_encoder.device),return_dict=False,)[0]
 
-                # encoder_hidden_states = torch.cat([encoder_hidden_states, unet.reward_emb.expand(encoder_hidden_states.shape[0], -1, -1)], dim=1)
-                special_token_len, dim = unet.reward_emb.shape[1:]
-                if args.cond_reward:
-                    encoder_hidden_states = torch.cat([encoder_hidden_states, unet.reward_emb.expand(encoder_hidden_states.shape[0], -1, -1)], dim=1)
-                else:
-                    encoder_hidden_states = torch.cat([unet.reward_emb.expand(noise.shape[0], -1, -1), torch.zeros(noise.shape[0], 77-special_token_len, dim).to(noise.device)], dim=1)
+                    rewards = reward_predictor(batch["pixel_values"].to(dtype=weight_dtype))
+
+                with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                    reward_emb = unet.reward_projector(rewards)
+
+                    encoder_hidden_states = torch.cat([reward_emb, torch.zeros(reward_emb.shape[0], 77-reward_emb.shape[1], reward_emb.shape[2]).to(reward_emb.device)], dim=1)
 
                 # Predict the noise residual
                 model_pred = unet(
@@ -107,13 +167,10 @@ def train(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    grad_norm = accelerator.clip_grad_norm_(unet.reward_emb, args.max_grad_norm)
+                    grad_norm = accelerator.clip_grad_norm_(unet.reward_projector.parameters(), args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-
-                if step % 25 == 0:
-                    print(unet.reward_emb)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

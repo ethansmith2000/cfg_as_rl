@@ -146,7 +146,7 @@ class StableDiffusionRLCFGPipeline(StableDiffusionPipeline):
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         reward_guidance_scale=2.5,
-        cond_reward=False,
+        reward_score=6.25,
         **kwargs,
     ):
         r"""
@@ -361,18 +361,11 @@ class StableDiffusionRLCFGPipeline(StableDiffusionPipeline):
         # add our special token
         neg_prompt_embeds, prompt_embeds = prompt_embeds.chunk(2)
 
-        if cond_reward:
-            # repeat padding tokens
-            buf_size = self.unet.reward_emb.size(1)
-            neg_prompt_embeds = torch.cat([neg_prompt_embeds, neg_prompt_embeds[:, -buf_size:]], dim=1)
-            prompt_embeds_base = torch.cat([prompt_embeds, prompt_embeds[:, -buf_size:]], dim=1)
-            prompt_embeds_reward = torch.cat([prompt_embeds, self.unet.reward_emb.expand(prompt_embeds.shape[0], -1, -1)], dim=1)
-            prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds_base, prompt_embeds_reward], dim=0)
-        else:
-            reward_emb =  self.unet.reward_emb.expand(prompt_embeds.shape[0], -1, -1)
-            token_len = reward_emb.shape[1]
-            reward_emb = torch.cat([reward_emb, torch.zeros(reward_emb.shape[0], 77-token_len, reward_emb.shape[2]).to(reward_emb.device)], dim=1)
-            prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds, reward_emb], dim=0)
+
+        score = torch.tensor([reward_score])[:,None].repeat(prompt_embeds.shape[0], 1).to(prompt_embeds.device).to(prompt_embeds.dtype)
+        reward_emb =  self.unet.reward_projector(score)
+        reward_emb = torch.cat([reward_emb, torch.zeros(reward_emb.shape[0], 77-reward_emb.shape[1], reward_emb.shape[2]).to(reward_emb.device)], dim=1)
+        prompt_embeds = torch.cat([neg_prompt_embeds, prompt_embeds, reward_emb], dim=0)
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order

@@ -55,9 +55,9 @@ def collate_fn(examples):
 
 
 
-def save_model(unet, accelerator, save_path, args, logger, keyword="reward_emb"):
+def save_model(unet, accelerator, save_path, args, logger):
     unwrapped = unwrap_model(accelerator, unet)
-    state_dict = {"token": unwrapped.reward_emb}
+    state_dict = {"token": unwrapped.reward_projector}
     torch.save(state_dict, save_path)
     logger.info(f"Saved state to {save_path}")
 
@@ -65,7 +65,7 @@ def save_model(unet, accelerator, save_path, args, logger, keyword="reward_emb")
 
 class PandasDataset(Dataset):
 
-    def __init__(self, dataset_path, size, center_crop=True, image_col='filename', prompt_col='prompt'):
+    def __init__(self, dataset_path, size, center_crop=True, image_col='filename', synth_prompt_col="re_caption", prompt_col='org_caption'):
         self.df = pd.read_parquet(dataset_path)
         self.df = self.df.dropna(subset=[image_col, prompt_col])
         self.df = self.df.reset_index(drop=True)
@@ -78,31 +78,37 @@ class PandasDataset(Dataset):
             ]
         )
 
-        image_paths = self.df[image_col].tolist()
-        folder = dataset_path.split("/")[:-1]
-        folder = "/".join(folder)
-        self.image_paths = [os.path.join(folder, img) for img in image_paths]
-        self.image_paths = [img for img in self.image_paths if os.path.exists(img)]
+        self.image_paths = self.df[image_col].tolist()
         self.prompts = self.df[prompt_col].tolist()
+        self.synth_prompts = self.df[synth_prompt_col].tolist()
 
+        print("image_paths", len(self.image_paths))
 
     def __len__(self):
         return len(self.image_paths)
     
+    def get_image(self, idx):
+        img_path = self.image_paths[idx]
+        if not os.path.exists(img_path):
+            return None
+        img = Image.open(img_path).convert("RGB")
+        img = self.image_transforms(img)
+
+        return img
+
 
     def __getitem__(self, idx):
-        for i in range(10):
+        for i in range(500):
             try:
-                img_path = self.image_paths[idx]
-                img = Image.open(img_path).convert("RGB")
-                w, h = img.size
-                img = img.crop((0, 0, w//2, h//2))
-                prompt = self.prompts[idx]
-                img = self.image_transforms(img)
+                img = self.get_image(idx)
+                if img is None:
+                    idx = random.randint(0, len(self.image_paths)-1)
+                    continue
 
                 example = {
                     "pixel_values": img,
-                    "text": prompt,
+                    "text": self.prompts[idx],
+                    "synth_text": self.synth_prompts[idx]
                 }
 
                 return example
@@ -110,6 +116,9 @@ class PandasDataset(Dataset):
                 idx = random.randint(0, len(self.image_paths)-1)
                 print(e)
                 continue
+        else:
+            raise Exception("Could not load image")
+
 
 
 
@@ -162,7 +171,7 @@ def log_validation(
 
     images = []
     with torch.cuda.amp.autocast():
-        images.extend(pipeline(prompt=args.validation_prompt, height=args.resolution, width=args.resolution, generator=generator, cond_reward=args.cond_reward).images)
+        images.extend(pipeline(prompt=args.validation_prompt, height=args.resolution, width=args.resolution, generator=generator).images)
 
     for tracker in accelerator.trackers:
         if args.use_wandb:
@@ -311,7 +320,7 @@ def get_dataset(args, tokenizer):
 
 default_arguments = dict(
     pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5",
-    dataset_path="./dataset.parquet",
+    dataset_path="/home/ubuntu/NoveltyGAN/data/combined.parquet",
     num_validation_images=4,
     output_dir="model-output",
     seed=124,
@@ -323,7 +332,7 @@ default_arguments = dict(
     resume_from_checkpoint=None,
     gradient_accumulation_steps=1,
     gradient_checkpointing=False,
-    learning_rate=5.0e-2,
+    learning_rate=1.0e-3,
     lr_scheduler="linear",
     lr_warmup_steps=50,
     lr_num_cycles=1,
@@ -342,8 +351,7 @@ default_arguments = dict(
     local_rank=-1,
     num_processes=1,
     use_wandb=True,
-    num_tokens=16,
-    cond_reward=True
+    num_tokens=16
 )
 
 
